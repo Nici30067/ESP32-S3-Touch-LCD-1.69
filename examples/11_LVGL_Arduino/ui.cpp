@@ -395,10 +395,12 @@ void load_ui() {
 
   /*TILE 7 SELECT TIME*/
   lv_obj_t *tile6_2 = lv_tileview_add_tile(tv, 1, 5, LV_DIR_LEFT);
+
   lv_obj_set_style_bg_color(tile6_2, lv_color_make(0, 0, 0), 0);
+  lv_obj_set_style_bg_opa(tile6_2, LV_OPA_100, 0);
   static lv_style_t style_roller;
   lv_style_init(&style_roller);
-  lv_style_set_bg_color(&style_roller, lv_color_black());
+  lv_style_set_bg_color(&style_roller, lv_color_make(0, 0, 0));   //lv_color_black()
   lv_style_set_text_color(&style_roller, lv_color_white());
   lv_style_set_border_width(&style_roller, 0);
   lv_style_set_pad_all(&style_roller, 0);
@@ -407,7 +409,7 @@ void load_ui() {
   lv_obj_add_style(roller1, &style_roller, 0);
   lv_obj_set_style_bg_opa(roller1, LV_OPA_TRANSP, LV_PART_SELECTED);
 #if LV_FONT_MONTSERRAT_22
-  lv_obj_set_style_text_font(roller1, &lv_font_montserrat_22, LV_PART_SELECTED);
+  lv_obj_set_style_text_font(roller1, &lv_font_montserrat_30, LV_PART_SELECTED);
 #endif
   lv_roller_set_options(roller1, "1\n"
                                  "5\n"
