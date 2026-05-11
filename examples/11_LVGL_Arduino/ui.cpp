@@ -421,7 +421,7 @@ void load_ui() {
                                  "60\n",
                         LV_ROLLER_MODE_NORMAL);
   lv_obj_center(roller1);
-  lv_obj_set_size(roller1, 300, 360);
+  lv_obj_set_size(roller1, 240, 280);
   lv_roller_set_selected(roller1, 3, LV_ANIM_OFF);
   lv_roller_set_visible_row_count(roller1, 3);
   lv_obj_add_event_cb(roller1, roller_mask_event_cb, LV_EVENT_ALL, NULL);
