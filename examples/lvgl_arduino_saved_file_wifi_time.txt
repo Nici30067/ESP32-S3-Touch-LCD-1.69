@@ -1,0 +1,823 @@
+//2.74V
+#include <lvgl.h>
+#include "Arduino_GFX_Library.h"
+#include "Arduino_DriveBus_Library.h"
+#include "pin_config.h"
+#include "lv_conf.h"
+#include <Wire.h>
+#include <SPI.h>
+#include <Arduino.h>
+#include "SensorPCF85063.hpp"
+#include "SensorQMI8658.hpp"
+#include "qmi_8658.h"
+
+//#include "esp_sleep.h"
+
+#include "image.h"
+#include "colors.h"
+#include "WiFi.h"  //wireless lan WLAN capabilities
+#include "voltage.h"
+#include "HWCDC.h"
+//#include "wifi_analyzer.h"
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#define USE_WIRE
+
+#ifndef SENSOR_SDA
+#define SENSOR_SDA 11  //ACHTUNG - DOPPELBELEGUNG IN pin_config.h
+#endif
+
+#ifndef SENSOR_SCL
+#define SENSOR_SCL 10  //ACHTUNG - DOPPELBELEGUNG IN pin_config.h
+#endif
+
+#ifndef SENSOR_IRQ
+#define SENSOR_IRQ -1
+#endif
+#define IMU_CS 5
+
+#define CANVAS_WIDTH 200
+#define CANVAS_HEIGHT 150
+
+//uint64_t bitmask = BUTTON_PIN_BITMASK(40);
+
+const int inputPin = 40;   // Define GPIO40 as input
+const int outputPin = 41;  // Define GPIO41 as output
+bool buttonState = false;
+bool clickDetected = false;
+
+HWCDC USBSerial;
+SensorPCF85063 rtc;
+RTC_DateTime datetime;
+SensorQMI8658 qmi;
+
+Arduino_DataBus *bus = new Arduino_ESP32SPI(LCD_DC, LCD_CS, LCD_SCK, LCD_MOSI);  //4 Schnittstellen DATEN
+Arduino_GFX *gfx = new Arduino_ST7789(bus, LCD_RST /* RST */, 0 /* rotation */, true /* IPS */, LCD_WIDTH, LCD_HEIGHT, 0, 20, 0, 0);
+std::shared_ptr<Arduino_IIC_DriveBus> IIC_Bus = std::make_shared<Arduino_HWIIC>(IIC_SDA, IIC_SCL, &Wire);
+
+void Arduino_IIC_Touch_Interrupt(void);
+std::unique_ptr<Arduino_IIC> CST816T(new Arduino_CST816x(IIC_Bus, CST816T_DEVICE_ADDRESS, TP_RST, TP_INT, Arduino_IIC_Touch_Interrupt));
+
+void Arduino_IIC_Touch_Interrupt(void) {
+  CST816T->IIC_Interrupt_Flag = true;
+}
+#define EXAMPLE_LVGL_TICK_PERIOD_MS 2
+
+uint32_t screenWidth;
+uint32_t screenHeight;
+uint32_t lastMillis;
+int every_ten_sec_counter = -2;
+
+static lv_disp_draw_buf_t draw_buf;
+static lv_color_t buf[LCD_WIDTH * LCD_HEIGHT / 10];  //included seit time example
+// static lv_color_t buf[screenWidth * screenHeight / 10];
+//init global LABELS & STRINGS & OBJECTS
+lv_obj_t *label;
+lv_obj_t *label_for_time;
+lv_obj_t *label_voltage;
+lv_obj_t *label_percentage;
+lv_obj_t *label_qmi_data_1;
+lv_obj_t *tv;
+lv_obj_t *label_temperature;
+String temp_string;
+lv_obj_t *bar;
+lv_obj_t *bar_volt;
+lv_obj_t *timer_application_label;
+lv_obj_t *label_inside_timer_btn;
+
+lv_timer_t *timer;
+int elapsed_time = 0;
+int start_time = 0;
+float timer_time = 15000;
+bool timer_is_activated = false;
+int remaining_time_in_sec;
+
+
+#if LV_USE_LOG != 0
+/* USBSerial debugging */
+void my_print(const char *buf) {
+  USBSerial.printf(buf);
+  USBSerial.flush();
+}
+#endif
+
+/* Display flushing */
+void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
+  uint32_t w = (area->x2 - area->x1 + 1);
+  uint32_t h = (area->y2 - area->y1 + 1);
+
+#if (LV_COLOR_16_SWAP != 0)
+  gfx->draw16bitBeRGBBitmap(area->x1, area->y1, (uint16_t *)&color_p->full, w, h);
+#else
+  gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)&color_p->full, w, h);
+#endif
+
+  lv_disp_flush_ready(disp);
+}
+
+void example_increase_lvgl_tick(void *arg) {
+  /* Tell LVGL how many milliseconds has elapsed */
+  lv_tick_inc(EXAMPLE_LVGL_TICK_PERIOD_MS);
+}
+
+static uint8_t count = 0;
+void example_increase_reboot(void *arg) {  //reboot wenn er sich aufhängt
+  count++;
+  if (count == 30) {
+    esp_restart();
+  }
+}
+
+void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {  //Void get TOUCHPAD data
+  int32_t touchX = CST816T->IIC_Read_Device_Value(CST816T->Arduino_IIC_Touch::Value_Information::TOUCH_COORDINATE_X);
+  int32_t touchY = CST816T->IIC_Read_Device_Value(CST816T->Arduino_IIC_Touch::Value_Information::TOUCH_COORDINATE_Y);
+
+  if (CST816T->IIC_Interrupt_Flag == true) {
+    CST816T->IIC_Interrupt_Flag = false;
+    data->state = LV_INDEV_STATE_PR;
+
+    /* Set the coordinates with some debounce */
+    if (touchX >= 0 && touchY >= 0) {
+      data->point.x = touchX;
+      data->point.y = touchY;
+
+      USBSerial.printf("Data x: %d, Data y: %d\n", touchX, touchY);
+    }
+  } else {
+    data->state = LV_INDEV_STATE_REL;
+  }
+}
+/*
+              /$$$$$$  /$$$$$$$$ /$$$$$$  /$$$$$$$  /$$$$$$$$
+            /$$__  $$|__  $$__//$$__  $$| $$__  $$|__  $$__/
+            | $$  \__/   | $$  | $$  \ $$| $$  \ $$   | $$   
+            |  $$$$$$    | $$  | $$$$$$$$| $$$$$$$/   | $$   
+            \____  $$   | $$  | $$__  $$| $$__  $$   | $$   
+            /$$  \ $$   | $$  | $$  | $$| $$  \ $$   | $$   
+            |  $$$$$$/   | $$  | $$  | $$| $$  | $$   | $$   
+            \______/    |__/  |__/  |__/|__/  |__/   |__/   
+*/
+/*
+                  Ziel: Smartwacht bauen!
+-testen: andere datei machen und void nutzen: mit refresh_labels aus voltage.h ausprobieren(label unten auskommentieren stattdessen refresh_labels();)
+-nach 60 sec aus und bei touch auf display wieder an
+-diagramm mit energiestatistik
+-pomodoro timer
+-deepsleep klappt in 01helloworld.ino->wenig energie bei akku boot: hier noch zu hoch
+-spannung mit messgerät messen
+-timer funktion mit einstellung von dauer
+-simple daten von eigenen sensoren anzeigen(QMI8658)
+-an taste = gerät aus; erneut drücken, geraet aus
+-Wetter anzeigen
+-Standort(auf map anzeigen)
+-puls messen (mit zusatzsensor)
+-Benachrichtigung vom handy
+-Schritte vom handy
+delay mit light sleep ersetzten (für delay>5s)
+einkaufsliste mit checkbox von home assistant?!?
+-beim laden immer nur die höchste gemessene prozentzahl anzeigen-> vermeiden von flackern der zahl
+-electric blue farbe?!
+-deepdive uhr: https://www.reddit.com/r/3Dprinting/comments/mkz25o/my_friend_and_i_3d_printed_the_housing_for_a_diy/
+-rgb strip steuern via matter: https://docs.espressif.com/projects/arduino-esp32/en/latest/matter/matter.html
+
+*/
+void setup() {
+  USBSerial.begin(115200); /* prepare for possible serial debug */
+  pinMode(voltageDividerPin, INPUT);
+  if (!rtc.begin(Wire, IIC_SDA, IIC_SCL)) {
+    USBSerial.println("Failed to find PCF8563 - check your wiring!");
+    while (1) {
+      delay(1000);
+    }
+  }
+  while (CST816T->begin() == false) {
+    USBSerial.println("CST816T initialization fail");
+    delay(2000);
+  }
+  USBSerial.println("CST816T initialization successfully");
+  //while (!Serial);
+
+#ifdef USE_WIRE
+  //Using WIRE !!
+  if (!qmi.begin(Wire, QMI8658_L_SLAVE_ADDRESS, SENSOR_SDA, SENSOR_SCL)) {
+    USBSerial.println("Failed to find QMI8658 - check your wiring!");
+    while (1) {
+      delay(1000);
+    }
+  }
+#else
+  if (!qmi.begin(IMU_CS)) {
+    USBSerial.println("Failed to find QMI8658 - check your wiring!");
+    while (1) {
+      delay(1000);
+    }
+  }
+#endif
+
+  /* Get chip id*/
+  USBSerial.print("QMI init successfull; Device ID:");
+  USBSerial.println(qmi.getChipID(), HEX);
+  //Hier gibt es noch mir mehr einstellungen zu:!!!!!!!!!!!!!!!
+  qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_4G, SensorQMI8658::ACC_ODR_1000Hz, SensorQMI8658::LPF_MODE_0);
+  qmi.configGyroscope(SensorQMI8658::GYR_RANGE_64DPS, SensorQMI8658::GYR_ODR_896_8Hz, SensorQMI8658::LPF_MODE_3);
+
+  qmi.enableGyroscope();
+  qmi.enableAccelerometer();
+  qmi.dumpCtrlRegister();
+
+  USBSerial.println("Reading qmi data now");
+
+
+  CST816T->IIC_Write_Device_State(CST816T->Arduino_IIC_Touch::Device::TOUCH_DEVICE_INTERRUPT_MODE,
+                                  CST816T->Arduino_IIC_Touch::Device_Mode::TOUCH_DEVICE_INTERRUPT_PERIODIC);
+  //###############################
+  USBSerial.println("device state successfull");
+  uint16_t year = 0000;
+  uint8_t month = 00;
+  uint8_t day = 00;
+  uint8_t hour = 00;
+  uint8_t minute = 00;
+  uint8_t second = 00;
+  USBSerial.println("time default successfull");
+
+
+
+  //energie keys:
+  pinMode(inputPin, INPUT);
+  pinMode(outputPin, OUTPUT);
+  digitalWrite(outputPin, HIGH);  // Initialize output pin to HIGH --->>> pin 41
+
+  gfx->begin();
+  pinMode(LCD_BL, OUTPUT);
+  digitalWrite(LCD_BL, HIGH);
+
+
+  screenWidth = gfx->width();
+  screenHeight = gfx->height();
+  lv_init();
+  USBSerial.println("lv init successfull");
+  lv_color_t *buf1 = (lv_color_t *)heap_caps_malloc(screenWidth * screenHeight / 4 * sizeof(lv_color_t), MALLOC_CAP_DMA);
+
+  lv_color_t *buf2 = (lv_color_t *)heap_caps_malloc(screenWidth * screenHeight / 4 * sizeof(lv_color_t), MALLOC_CAP_DMA);
+
+#if LV_USE_LOG != 0
+  lv_log_register_print_cb(my_print); /* register print function for debugging */
+#endif
+
+  lv_disp_draw_buf_init(&draw_buf, buf1, buf2, screenWidth * screenHeight / 4);
+
+  /*Initialize the display*/
+  static lv_disp_drv_t disp_drv;
+  lv_disp_drv_init(&disp_drv);
+  /*Change the following line to your display resolution*/
+  disp_drv.hor_res = screenWidth;
+  disp_drv.ver_res = screenHeight;
+  disp_drv.flush_cb = my_disp_flush;
+  disp_drv.draw_buf = &draw_buf;
+  lv_disp_drv_register(&disp_drv);
+
+  /*Initialize the (dummy) input device driver*/
+  static lv_indev_drv_t indev_drv;
+  lv_indev_drv_init(&indev_drv);
+  indev_drv.type = LV_INDEV_TYPE_POINTER;
+  indev_drv.read_cb = my_touchpad_read;
+  lv_indev_drv_register(&indev_drv);
+  USBSerial.println("display driver init successfull");
+  //---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+  if (true) {
+    const esp_timer_create_args_t lvgl_tick_timer_args = {
+      .callback = &example_increase_lvgl_tick,
+      .name = "lvgl_tick"
+    };
+
+    const esp_timer_create_args_t reboot_timer_args = {
+      .callback = &example_increase_reboot,
+      .name = "reboot"
+    };
+
+    esp_timer_handle_t lvgl_tick_timer = NULL;
+    esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer);
+    esp_timer_start_periodic(lvgl_tick_timer, EXAMPLE_LVGL_TICK_PERIOD_MS * 1000);
+  }
+  /*      WORKS11111111111111111111111
+label = lv_label_create(lv_scr_act());   // auf aktuellem Bildschirm
+    lv_label_set_text(label, "Loading...");  // Starttext
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, -50);
+
+ lv_obj_t * label_for_btn;
+
+    lv_obj_t * btn1 = lv_btn_create(lv_scr_act());
+    lv_obj_add_event_cb(btn1, event_handler, LV_EVENT_ALL, NULL);
+    lv_obj_align(btn1, LV_ALIGN_CENTER, 0, 50);
+
+    label_for_btn = lv_label_create(btn1);
+    lv_label_set_text(label_for_btn, "Button");
+    lv_obj_center(label_for_btn);
+*/
+  /*BACKGROUND W/ GRADIENT
+ static lv_style_t style;
+    lv_style_init(&style);
+    lv_style_set_radius(&style, 10);
+
+    /*Make a gradient
+    lv_style_set_bg_opa(&style, LV_OPA_COVER);
+    static lv_grad_dsc_t grad;
+    grad.dir = LV_GRAD_DIR_VER;
+    grad.stops_count = 2;
+    grad.stops[0].color = lv_palette_lighten(LV_PALETTE_GREY, 1);
+    grad.stops[1].color = lv_palette_main(LV_PALETTE_BLUE);
+
+    //Shift the gradient to the bottom
+    grad.stops[0].frac  = 128;
+    grad.stops[1].frac  = 192;
+
+    lv_style_set_bg_grad(&style, &grad);
+
+    //Create an object with the new style
+    lv_obj_t * obj = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(obj, 250, 290);
+    lv_obj_add_style(obj, &style, 0);
+    lv_obj_center(obj);*/
+
+
+  tv = lv_tileview_create(lv_scr_act());
+
+  lv_obj_set_scrollbar_mode(tv, LV_SCROLLBAR_MODE_OFF);
+
+  /*Tile1: just a label*/
+  lv_obj_t *tile1 = lv_tileview_add_tile(tv, 0, 0, LV_DIR_BOTTOM);
+  lv_obj_set_style_bg_color(lv_obj_get_child(tv, 0), lv_color_make(0, 0, 0), 0);
+  lv_obj_set_style_bg_opa(lv_obj_get_child(tv, 0), LV_OPA_100, 0);
+  /*Tile1: Background color mix outside of time*/
+  lv_draw_rect_dsc_t rect_dsc;
+  lv_draw_rect_dsc_init(&rect_dsc);
+  rect_dsc.radius = 10;
+  rect_dsc.bg_opa = LV_OPA_COVER;
+  rect_dsc.bg_grad.dir = LV_GRAD_DIR_HOR;
+  rect_dsc.bg_grad.stops[0].color = lv_palette_main(LV_PALETTE_RED);
+  rect_dsc.bg_grad.stops[1].color = lv_palette_main(LV_PALETTE_BLUE);
+  static lv_color_t cbuf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(CANVAS_WIDTH, CANVAS_HEIGHT)];
+  lv_obj_t *canvas = lv_canvas_create(tile1);
+  lv_canvas_set_buffer(canvas, cbuf, CANVAS_WIDTH, CANVAS_HEIGHT, LV_IMG_CF_TRUE_COLOR_ALPHA);
+  lv_obj_center(canvas);
+  lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_TRANSP);
+  /*Tile1: time label and background*/
+  int canvas_width = 160;
+  lv_canvas_draw_rect(canvas, ((200 - canvas_width) / 2), 0, canvas_width, 70, &rect_dsc);
+  lv_obj_t *bkgrnd = lv_obj_create(tile1);
+  lv_obj_set_width(bkgrnd, 150);
+  lv_obj_set_height(bkgrnd, 60);
+  lv_obj_set_pos(bkgrnd, 45, 70);
+  lv_obj_set_style_bg_color(bkgrnd, lv_color_hex(0x123456), BLACK);
+  lv_obj_set_style_border_width(bkgrnd, 0, 0);
+  label_for_time = lv_label_create(tile1);
+  lv_label_set_recolor(label_for_time, true);                                        /*Enable re-coloring by commands in the text*/
+  lv_obj_set_style_text_font(label_for_time, &lv_font_montserrat_40, LV_PART_MAIN);  //&lv_font_montserrat_40
+  lv_obj_center(label_for_time);
+  lv_obj_set_y(label_for_time, -40);
+  lv_obj_set_style_text_color(label_for_time, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  /*Tile1: temperature label*/
+  label_temperature = lv_label_create(tile1);
+  lv_label_set_text(label_temperature, "loading...");
+  lv_obj_set_pos(label_temperature, 80, 160);
+  lv_obj_set_style_text_color(label_temperature, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  /*Tile1: voltage label */
+  label_voltage = lv_label_create(tile1);
+  lv_label_set_recolor(label_voltage, true);
+  lv_obj_set_pos(label_voltage, 120, 240);
+  lv_obj_set_style_text_color(label_voltage, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+  //label_percentage = lv_label_create(tile1);
+  //lv_label_set_recolor(label_percentage, true);
+  //lv_obj_set_pos(label_percentage, 50, 230);
+  /*Tile1: TEMPERATUR BAR*/
+  static lv_style_t style_indic;
+  lv_style_init(&style_indic);
+  lv_style_set_bg_opa(&style_indic, LV_OPA_COVER);
+  lv_style_set_bg_color(&style_indic, lv_palette_main(LV_PALETTE_RED));
+  lv_style_set_bg_grad_color(&style_indic, lv_palette_main(LV_PALETTE_BLUE));
+  lv_style_set_bg_grad_dir(&style_indic, LV_GRAD_DIR_VER);
+  bar = lv_bar_create(tile1);
+  lv_obj_add_style(bar, &style_indic, LV_PART_INDICATOR);
+  lv_obj_set_size(bar, 20, 110);
+  lv_obj_center(bar);
+  lv_obj_set_y(bar, 70);
+  lv_obj_set_x(bar, -65);
+  lv_bar_set_range(bar, 20, 50);
+  /*Tile1: VOLTAGE BAR*/
+  static lv_style_t style_indic_volt;
+  lv_style_init(&style_indic_volt);
+  lv_style_set_bg_opa(&style_indic_volt, LV_OPA_COVER);
+  lv_style_set_bg_color(&style_indic_volt, lv_palette_main(LV_PALETTE_GREEN));
+  lv_style_set_bg_grad_color(&style_indic_volt, lv_palette_main(LV_PALETTE_GREY));
+  lv_style_set_bg_grad_dir(&style_indic_volt, LV_GRAD_DIR_VER);
+  bar_volt = lv_bar_create(tile1);
+  lv_obj_add_style(bar_volt, &style_indic_volt, LV_PART_INDICATOR);
+  lv_obj_set_size(bar_volt, 20, 110);
+  lv_obj_center(bar_volt);
+  lv_obj_set_y(bar_volt, 70);
+  lv_obj_set_x(bar_volt, 65);
+  lv_bar_set_range(bar_volt, 3500, 3900);  //kann nur ints annehmen also so hier
+
+
+  /*TILE 2: Button*/
+  lv_obj_t *tile2 = lv_tileview_add_tile(tv, 0, 1, LV_DIR_TOP | LV_DIR_BOTTOM);
+  lv_obj_t *btn_timer_start = lv_btn_create(tile2);
+  label_inside_timer_btn = lv_label_create(btn_timer_start);
+  lv_label_set_text(label_inside_timer_btn, "Timer Starten");
+  lv_obj_set_size(label_inside_timer_btn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_center(label_inside_timer_btn);
+  /*Tile2: Style button*/
+  static lv_style_t style;
+  lv_style_init(&style);
+  lv_style_set_radius(&style, 40);
+  lv_style_set_bg_opa(&style, LV_OPA_COVER);
+  lv_style_set_bg_color(&style, lv_palette_lighten(LV_PALETTE_BLUE, 1));
+  lv_style_set_shadow_width(&style, 55);
+  lv_style_set_shadow_color(&style, lv_palette_main(LV_PALETTE_BLUE));
+  //    lv_style_set_shadow_ofs_x(&style, 10);
+  //    lv_style_set_shadow_ofs_y(&style, 20);
+  lv_obj_add_style(btn_timer_start, &style, 0);
+  lv_obj_center(btn_timer_start);
+  lv_obj_set_pos(btn_timer_start, 0, 40);
+  lv_obj_set_size(btn_timer_start, 180, 50);
+  lv_obj_add_event_cb(btn_timer_start, event_handler_timer_button, LV_EVENT_ALL, NULL);
+  /*Label 2 Timer information label*/
+  timer_application_label = lv_label_create(tile2);
+  lv_label_set_text(timer_application_label, "Timer bereit");
+  lv_obj_center(timer_application_label);
+  lv_obj_set_pos(timer_application_label, 0, -40);
+
+  /*TILE 3*/
+  lv_obj_t *tile3 = lv_tileview_add_tile(tv, 0, 2, LV_DIR_TOP | LV_DIR_BOTTOM);
+  lv_obj_set_style_bg_color(lv_obj_get_child(tv, 2), lv_color_make(0, 0, 0), 0);
+  lv_obj_set_style_bg_opa(lv_obj_get_child(tv, 2), LV_OPA_100, 0);
+  lv_obj_t *label2 = lv_label_create(tile3);
+  lv_label_set_recolor(label2, true); /*Enable re-coloring by commands in the text*/
+  lv_label_set_text(label2, "#ffffff Scroll down");
+  lv_obj_center(label2);
+
+  /*TILE 4*/
+  lv_obj_t *tile4 = lv_tileview_add_tile(tv, 0, 3, LV_DIR_TOP | LV_DIR_BOTTOM);
+  lv_obj_t *img_obj = lv_img_create(tile4);
+  lv_img_set_src(img_obj, &crop_img);  // Set the image source to img_test3
+  lv_obj_align(img_obj, LV_ALIGN_CENTER, 0, 0);
+
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin("FRITZ!Box 7490", "24962932330633517487");
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  USBSerial.print("Connecting to WiFi ..");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    USBSerial.print(".");
+  }
+  USBSerial.println(WiFi.localIP());
+  USBSerial.println("wifi connection successfull");
+
+  const char *ntpServer = "pool.ntp.org";
+  configTime(1 * 3600, 0, ntpServer);  // Time zone
+  delay(3500);
+
+  time_t t;
+  time(&t);  // Get current time information, followUp
+  struct tm *timeinfo = localtime(&t);
+  if (timeinfo == NULL) {
+    USBSerial.println("Failed to get time");
+    return;
+  }
+  USBSerial.println(timeinfo->tm_hour);
+  USBSerial.println(timeinfo->tm_min);
+  USBSerial.println("time fetch successfull");
+
+  delay(400);
+
+  year = timeinfo->tm_year + 1900;
+  month = timeinfo->tm_mon + 1;
+  day = timeinfo->tm_mday;
+  hour = timeinfo->tm_hour;
+  minute = timeinfo->tm_min;
+  second = timeinfo->tm_sec;
+  USBSerial.println("current time store successfull");
+  rtc.setDateTime(year, month, day, hour, minute, second);
+  USBSerial.println("rtc set date successfull");
+  //################################
+  WiFi.disconnect();
+  WiFi.mode(WIFI_OFF);
+  USBSerial.println("Wifi disabled for better battery duration");
+
+
+  //---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  USBSerial.println("setup finished");
+}
+
+void loop() {
+  lv_timer_handler(); /* let the GUI do its work */
+  delay(10);
+
+
+
+
+
+
+  if (millis() - lastMillis >= 1000) {
+    lastMillis = millis();
+    datetime = rtc.getDateTime();
+
+    //EIGENER TIMER
+    if (timer_is_activated) {
+    if (start_time == 0) {
+      start_time = millis();
+    }
+      //alles unsigned long machen
+      float current_time = millis();  //jetzt ist es 34000 ms
+      //jetzt bis auf nächsten durchlauf warten
+      elapsed_time = current_time - start_time;
+      float remaining_timer_time = timer_time - elapsed_time;
+      remaining_time_in_sec = remaining_timer_time / 1000;
+
+      //unbedingt buffer nutzen
+      String remaining_time_in_sec_string = String(remaining_time_in_sec);
+
+      lv_label_set_text(timer_application_label, remaining_time_in_sec_string.c_str());
+    }
+    //float calculated_percentage = ((actualVoltage-3)*100);
+    //calculated_percentage_string = String(calculated_percentage);
+
+    // if (qmi.getDataReady()) {
+    //     if (qmi.getAccelerometer(acc.x, acc.y, acc.z)) {
+    //       USBSerial.print("{ACCEL: ");
+    //       USBSerial.print(acc.x);
+    //       USBSerial.print(",");
+    //       USBSerial.print(acc.y);
+    //       USBSerial.print(",");
+    //       USBSerial.print(acc.z);
+    //       USBSerial.println("}");
+    //     }
+    //     if (qmi.getGyroscope(gyr.x, gyr.y, gyr.z)) {
+    //       USBSerial.print("{GYRO: ");
+    //       USBSerial.print(gyr.x);
+    //       USBSerial.print(",");
+    //       USBSerial.print(gyr.y);
+    //       USBSerial.print(",");
+    //       USBSerial.print(gyr.z);
+    //       USBSerial.println("}");
+    //     }
+    //     //USBSerial.printf("\t\t\t\t > %lu  %.2f *C\n", qmi.getTimestamp(), qmi.getTemperature_C());
+    //     sprintf(qmi_data1, "%d", (long)qmi.getTimestamp());
+    //     sprintf(qmi_data2, "%d", (long)qmi.getTemperature_C());
+    //     sprintf(qmi_data3, "%d", (long)acc.x);
+    //     sprintf(qmi_data4, "%d", (long)gyr.x);
+    //   }
+
+    every_ten_sec_counter++;
+    if (every_ten_sec_counter >= 10 || every_ten_sec_counter < 0) {  //direkt zum start <0 und alle 10 sec danach
+      if (qmi.getDataReady()) {
+        int adcValue = analogRead(voltageDividerPin);
+        float voltage = (float)adcValue * (vRef / 4095.0);
+        float actualVoltage = voltage * ((R1 + R2) / R2);
+        //USBSerial.println(actualVoltage);
+        voltageStr = /*"Actual Voltage: " +*/ String(actualVoltage) + " V";
+        lv_label_set_text(label_voltage, voltageStr.c_str());
+        if (actualVoltage <= 3.5) {
+          esp_deep_sleep_start();
+        }
+
+        set_temp(bar, qmi.getTemperature_C());
+        int actualVoltageTimesTen = round(actualVoltage * 1000);
+        USBSerial.println(actualVoltageTimesTen);
+        set_value(bar_volt, actualVoltageTimesTen);
+        USBSerial.println(qmi.getTemperature_C());
+        temp_string = String(qmi.getTemperature_C());
+        temp_string += "°C";
+        lv_label_set_text(label_temperature, temp_string.c_str());
+        every_ten_sec_counter = 0;
+      }
+    }
+    //ab hier wieder sekuendlich
+  }
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%02d:%02d", datetime.hour, datetime.minute);
+  //USBSerial.println(buf);
+  /*snprintf(buf, sizeof(buf), "%02d:%02d:%02d\n%02d-%02d-%04d",
+             datetime.hour, datetime.minute, datetime.second,
+             datetime.day, datetime.month, datetime.year);*/
+
+  // Update label with current time
+  lv_label_set_text(label_for_time, buf);
+  //lv_label_set_text(label_percentage, calculated_percentage_string.c_str());
+  //lv_label_set_text(label_qmi_data_1, qmi_data1);
+  //lv_label_set_text(label_qmi_data_2, qmi_data2);
+  //lv_label_set_text(label_qmi_data_3, qmi_data3);
+  //lv_label_set_text(label_qmi_data_4, qmi_data4);
+  delay(20);
+  check_if_power_button_is_pressed_once();
+}
+
+static void set_temp(void *bar, int32_t temp) {
+  lv_bar_set_value((lv_obj_t *)bar, temp, LV_ANIM_OFF);
+}
+static void set_value(void *bar_volt, int value) {
+  lv_bar_set_value((lv_obj_t *)bar_volt, (int32_t)(value), LV_ANIM_OFF);
+}
+
+static void check_if_power_button_is_pressed_once() {
+  //check if power button is pressed
+  int reading = digitalRead(inputPin);
+  int checking_cur_lcd_state = digitalRead(LCD_BL);
+  if (reading != buttonState) {
+    buttonState = reading;
+
+    if (buttonState == LOW) {
+      // Operation when button is pressed - single click detected
+
+      clickDetected = true;
+      //esp_sleep_enable_timer_wakeup(10 * 1000000ULL);
+      //esp_sleep_enable_ext0_wakeup(GPIO_NUM_27, level);
+      //esp_sleep_enable_ext1_wakeup_io(bitmask, ESP_EXT1_WAKEUP_ANY_LOW);
+      //digitalWrite(LCD_BL, LOW);
+      //delay(1000);
+      //esp_deep_sleep_start();
+      if (checking_cur_lcd_state == HIGH) {
+
+        digitalWrite(LCD_BL, LOW);
+
+      } else if (checking_cur_lcd_state == LOW) {
+        digitalWrite(LCD_BL, HIGH);
+      }
+    }
+    delay(100);  // Used to eliminate button noise
+  }
+}
+
+static void event_handler_timer_button(lv_event_t *e) {
+  lv_event_code_t code = lv_event_get_code(e);
+
+  if (code == LV_EVENT_CLICKED) {
+    timer_is_activated = true;
+    LV_LOG_USER("Clicked");
+    lv_label_set_text(timer_application_label, "Button clicked");
+    static uint32_t user_data = 10;  // Not sure if I need to use this...
+    timer = lv_timer_create(timer_ended, timer_time, &user_data);
+    //lv_timer_ready(timer);
+  }
+}
+
+void timer_ended(lv_timer_t *timer) {
+  lv_label_set_text(timer_application_label, "timer_ended");
+  timer_is_activated = false;
+  start_time = 0;
+}
+/*UNUSED OBJECTS*/
+
+
+/*Test the rotation. It requires another buffer where the original image is stored.
+     *So copy the current image to buffer and rotate it to the canvas
+    static lv_color_t cbuf_tmp[CANVAS_WIDTH * CANVAS_HEIGHT];
+    memcpy(cbuf_tmp, cbuf, sizeof(cbuf_tmp));
+    lv_img_dsc_t img;
+    img.data = (void *)cbuf_tmp;
+    img.header.cf = LV_IMG_CF_TRUE_COLOR;
+    img.header.w = CANVAS_WIDTH;
+    img.header.h = CANVAS_HEIGHT;
+
+    lv_canvas_fill_bg(canvas, lv_palette_lighten(LV_PALETTE_GREY, 3), LV_OPA_COVER);
+    lv_canvas_transform(canvas, &img, 120, LV_IMG_ZOOM_NONE, 0, 0, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, true);*/
+
+
+/*
+  lv_obj_t *panel = lv_obj_create(lv_scr_act());
+  lv_obj_set_size(panel, 245, 285);  //Panel size increased from 120 to 160
+  lv_obj_set_scroll_snap_x(panel, LV_SCROLL_SNAP_CENTER);
+  lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_ROW);
+  lv_obj_align(panel, LV_ALIGN_CENTER, 0, 20);
+  USBSerial.println("1/4");
+
+    //show <IP ADDRESS>
+    const char *str = WiFi.localIP().toString().c_str();
+    //lv_label_set_text(labell, str);
+    //lv_obj_set_pos(labell, 10,10);
+
+    uint32_t i;
+    for (i = 0; i < 10; i++) {
+    lv_obj_t *btn = lv_btn_create(panel);
+    lv_obj_set_size(btn, 240, lv_pct(100));
+    USBSerial.println("2/4");
+
+    lv_obj_t *label;
+    if(i == 0){
+      label_for_time = lv_label_create(btn);
+      label_voltage = lv_label_create(btn);
+      label_percentage = lv_label_create(btn);
+      lv_label_set_text_fmt(label_for_time, "loading...", i);
+      lv_label_set_text_fmt(label_voltage, "loading...", i);
+      lv_label_set_text_fmt(label_percentage, "loading...", i);
+      lv_obj_center(label_voltage);
+      lv_obj_align_to(label_percentage, btn, LV_ALIGN_BOTTOM_LEFT, 0, -10);
+    }else if (i == 1) {
+       label = lv_label_create(btn);
+      lv_label_set_text_fmt(label, str, i);
+       lv_obj_center(label);
+    }else if (i == 2) {
+         label_qmi_data_1 = lv_label_create(btn);;
+         label_qmi_data_2 = lv_label_create(btn);;
+         label_qmi_data_3 = lv_label_create(btn);;
+         label_qmi_data_4 = lv_label_create(btn);;
+      lv_label_set_text_fmt(label_qmi_data_1, "loading", i);
+      lv_label_set_text_fmt(label_qmi_data_2, "loading", i);
+      lv_label_set_text_fmt(label_qmi_data_3, "loading", i);
+      lv_label_set_text_fmt(label_qmi_data_4, "loading", i);
+        lv_obj_align_to(label_qmi_data_1, btn, LV_ALIGN_TOP_LEFT, 0, -10);
+        lv_obj_align_to(label_qmi_data_2, btn, LV_ALIGN_TOP_RIGHT, 0, -10);
+        lv_obj_align_to(label_qmi_data_3, btn, LV_ALIGN_BOTTOM_LEFT, 0, -10);
+        lv_obj_align_to(label_qmi_data_4, btn, LV_ALIGN_BOTTOM_RIGHT, 0, -10);
+    }else if (i == 3){
+      lv_obj_t *img_obj = lv_img_create(btn);
+   lv_img_set_src(img_obj, &crop_img);  // Set the image source to img_test3
+   lv_obj_align(img_obj, LV_ALIGN_CENTER, 0, 0);
+    }
+      //lv_obj_clear_flag(btn, LV_OBJ_FLAG_SNAPPABLE);      //der button wird hier irgendwie komisch geskipped
+     else{
+       label = lv_label_create(btn);
+      lv_label_set_text_fmt(label, "Button", i);
+       lv_obj_center(label);
+    }
+  USBSerial.println("3/4");
+  }
+  lv_obj_update_snap(panel, LV_ANIM_ON);
+  USBSerial.println("4/4");*/
+
+/*    LABEL
+  //lv_obj_t *label = lv_label_create(lv_scr_act());
+  //lv_label_set_text(label, "Ich habe dich geschaffen, du bist meins");
+  //lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+  */
+
+
+//show  TEXT LABEL
+//lv_obj_t * labell = lv_label_create(lv_scr_act());
+//lv_label_set_text(labell, buff2);
+//lv_obj_set_pos(labell, 10,50);
+
+
+/*      DEFAULT TESTS 
+  //lv_demo_widgets();
+   //lv_demo_benchmark();
+  //lv_demo_keypad_encoder();
+  */
+
+
+/*   REVENUE DISPLAY POTENTIAL MIT CHART
+    lv_obj_t * panel1 = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(panel1, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_bottom(panel1, 30, 0);
+    lv_obj_t * title = lv_label_create(panel1);
+    lv_label_set_text(title, "Monthly Summary");
+    lv_obj_t * date = lv_label_create(panel1);
+    lv_label_set_text(date, "8-15 July, 2021");
+    lv_obj_t * amount = lv_label_create(panel1);
+    lv_label_set_text(amount, "$27,123.25");
+    lv_obj_t * hint = lv_label_create(panel1);
+    lv_label_set_text(hint, LV_SYMBOL_UP" 17% growth this week");
+    lv_obj_set_style_text_color(hint, lv_palette_main(LV_PALETTE_GREEN), 0);
+   static lv_coord_t grid1_col_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+        static lv_coord_t grid1_row_dsc[] = {
+            LV_GRID_CONTENT,  //Title + Date
+            LV_GRID_CONTENT,  //Amount + Hint
+            200,              //Chart
+            LV_GRID_TEMPLATE_LAST
+        };
+        lv_obj_update_layout(panel1);
+        lv_obj_set_grid_dsc_array(panel1, grid1_col_dsc, grid1_row_dsc);
+        lv_obj_set_grid_cell(title, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_CENTER, 0, 1);
+        lv_obj_set_grid_cell(date, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 0, 1);
+        lv_obj_set_grid_cell(amount, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_CENTER, 1, 1);
+        lv_obj_set_grid_cell(hint, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 1, 1);*/
+
+/*      SLIDER(add following to top of file: static void slider_event_cb(lv_event_t * e);static lv_obj_t * slider_label;)
+    lv_obj_t * slider = lv_slider_create(lv_scr_act());
+    lv_obj_center(slider);
+   lv_obj_set_content_width(slider, 200);
+    lv_obj_add_event_cb(slider, slider_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lv_obj_set_style_anim_time(slider, 200, 0);
+    slider_label = lv_label_create(lv_scr_act());
+    lv_label_set_text(slider_label, "0%");
+        lv_obj_align_to(slider_label, slider, LV_ALIGN_OUT_BOTTOM_MID, 0, 10);
+
+       // außen adden: 
+        static void slider_event_cb(lv_event_t * e)
+  {
+    lv_obj_t * slider = lv_event_get_target(e);
+    char buf[8];
+    lv_snprintf(buf, sizeof(buf), "%d%%", (int)lv_slider_get_value(slider));
+    lv_label_set_text(slider_label, buf);
+    lv_obj_align_to(slider_label, slider, LV_ALIGN_OUT_BOTTOM_MID, 0, 10);
+  }
+    */
+
+/*         DISPLAY IMAGE
+   lv_obj_t *img_obj = lv_img_create(lv_scr_act());
+   lv_img_set_src(img_obj, &img_test3);  // Set the image source to img_test3
+   lv_obj_align(img_obj, LV_ALIGN_CENTER, 0, 0);
+   */
