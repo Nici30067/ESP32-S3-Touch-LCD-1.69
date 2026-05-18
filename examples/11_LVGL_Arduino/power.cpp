@@ -71,10 +71,13 @@ void check_lcd_bl_timeout_timer() {
     digitalWrite(LCD_BL, LOW);
     delay(500);
     esp_light_sleep_start();
+    /*das hier ist neu*/yield(); 
+                        delay(50);
     digitalWrite(LCD_BL, HIGH);  //display aktiv nachdem light sleep beendet
     if (backlight_pwm != 0) {
       analogWrite(LCD_BL, backlight_pwm);
     }
+    /*lv_timer_handler_run_in_period(10);                   hier bin ich mir nicht so sicher*/
     every_ten_sec_counter = 10;
     last_touch_time = millis();
   }
