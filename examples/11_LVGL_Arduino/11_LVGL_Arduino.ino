@@ -41,7 +41,7 @@ uint32_t screenHeight;
 uint32_t lastMillis;
 
 static lv_disp_draw_buf_t draw_buf;
-static lv_color_t buf[LCD_WIDTH * LCD_HEIGHT / 10];  //included seit time example
+//static lv_color_t buff[LCD_WIDTH * LCD_HEIGHT / 10];  //included seit time example
 // static lv_color_t buf[screenWidth * screenHeight / 10];
 
 int elapsed_time = 0;
@@ -303,18 +303,18 @@ void every_ten_seconds(){
           voltage_sum = voltage_sum + voltage;
           delay(5);
         }
-        voltageStr = String(voltage_sum/1000) + " V";
-        lv_label_set_text(label_voltage, voltageStr.c_str());
+
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f V", voltage_sum / 1000.0f);
+        lv_label_set_text(label_voltage, buf);
         if (voltage_sum <= 3500) {
           esp_deep_sleep_start();
         }
-
         set_temp(bar, qmi_data_current);
         set_value(bar_volt, voltage_sum);
+        snprintf(buf, sizeof(buf), "%.1f °C", qmi_data_current);
+        lv_label_set_text(label_temperature, buf);
 
-        temp_string = String(qmi_data_current);
-        temp_string += "°C";
-        lv_label_set_text(label_temperature, temp_string.c_str());
         every_ten_sec_counter = 0;
 
         float temp_for_chart = qmi_data_current;
