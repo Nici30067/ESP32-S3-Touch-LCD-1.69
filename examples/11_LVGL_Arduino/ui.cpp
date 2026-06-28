@@ -23,8 +23,7 @@ lv_obj_t *timer_application_label;
 lv_obj_t *label_for_time;
 lv_obj_t *label_slider_backlight;
 lv_obj_t *chart;
-lv_obj_t *fake_chart;
-lv_chart_series_t *ser2;
+lv_chart_series_t *series;
 lv_timer_t *timer;
 lv_timer_t *system_timer_1;
 lv_obj_t *label_display_off_after_one_min;
@@ -130,33 +129,22 @@ void load_ui() {
 
   /*Tile 1.1 Rechts Energiestatistik*/
   lv_obj_t *tile1_1 = lv_tileview_add_tile(tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-  //fake chart
-  fake_chart = lv_chart_create(tile1_1);
-  lv_obj_set_size(fake_chart, 180, 240);  //240,280
-  lv_obj_center(fake_chart);
-  lv_obj_set_pos(fake_chart, 20, 0);
-  lv_chart_set_type(fake_chart, LV_CHART_TYPE_LINE); /*Show lines and points too*/
-  lv_chart_set_axis_tick(fake_chart, LV_CHART_AXIS_PRIMARY_Y, 8, 3, 6, 2, true, 50);
-  lv_chart_set_range(fake_chart, LV_CHART_AXIS_PRIMARY_Y, 34, 38);  //von 38 bis 45 grad -> besser wäre dynamische anpassung
-  lv_chart_refresh(fake_chart);
-
-
+  chart = NULL;  
+  series = NULL;
   chart = lv_chart_create(tile1_1);
-  lv_obj_set_size(chart, 180, 240);  //240,280
+  lv_obj_set_size(chart, 200, 260);
   lv_obj_center(chart);
-  lv_obj_set_pos(chart, 20, 0);
-  lv_chart_set_type(chart, LV_CHART_TYPE_LINE); /*Show lines and points too*/
-  lv_chart_set_axis_tick(chart, LV_CHART_AXIS_PRIMARY_Y, 8, 3, 6, 2, false, 50);
-  /*Add two data series*/
-  ser2 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_GREEN), LV_CHART_AXIS_PRIMARY_Y);
-  lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 340, 380);  //von 38 bis 45 grad -> besser wäre dynamische anpassung
-  lv_chart_set_point_count(chart, 20);
+    lv_obj_set_x(chart, 20);
 
-  /*Directly set points on 'ser2'*/
-  for (int l = 0; l < 20; l++) {
-    ser2->y_points[l] = 380;
-  }
-  lv_chart_refresh(chart); /*Required after direct set*/
+    lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(chart, 20);           // 24 sichtbare Punkte
+    lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
+    lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, 500); // 0.0–50.0 °C (×10)
+    lv_chart_set_div_line_count(chart, 3, 3);
+    series = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_RED),
+                                 LV_CHART_AXIS_PRIMARY_Y);
+                                 lv_chart_set_axis_tick(chart, LV_CHART_AXIS_PRIMARY_Y, 10, 5, 6, 2, true, 50);
+
 
 
 

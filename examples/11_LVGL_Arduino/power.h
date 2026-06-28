@@ -23,7 +23,7 @@ extern String voltageStr;
 extern String calculated_percentage_string;
 extern lv_obj_t *bar;
 extern lv_obj_t *bar_volt;
-extern int every_ten_sec_counter;
+extern unsigned int every_ten_sec_counter;
 extern int32_t display_timer_off_time;
 
 void check_if_power_button_is_pressed_once();

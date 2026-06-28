@@ -287,10 +287,15 @@ void loop() {
       USBSerial.println("jetzt");
 sys_delay_ms(1000);
     }*/
-
+static void set_temp(void *bar, int32_t temp) {
+  lv_bar_set_value((lv_obj_t *)bar, temp, LV_ANIM_OFF);
+}
+static void set_value(void *bar_volt, int value) {
+  lv_bar_set_value((lv_obj_t *)bar_volt, (int32_t)(value), LV_ANIM_OFF);
+}
 void every_ten_seconds(){
   every_ten_sec_counter++;
-    if (every_ten_sec_counter >= 10 || every_ten_sec_counter < 0) {  //direkt zum start <0 und alle 10 sec danach
+    if (every_ten_sec_counter >= 10) {  //direkt zum start <0 und alle 10 sec danach
     if(lv_anim_count_running()>0){
       last_touch_time = millis();
     }
@@ -300,10 +305,8 @@ void every_ten_seconds(){
         float voltage_sum = 0;
         for(int z = 0; z<3; z++){
           voltage = analogReadMilliVolts(voltageDividerPin);
-          voltage_sum = voltage_sum + voltage;
-          delay(5);
+          voltage_sum = voltage_sum + voltage;        //kein teilen durch 3 da er durch voltage divider nur 1/3 bei jeder messung hat
         }
-
         char buf[32];
         snprintf(buf, sizeof(buf), "%.2f V", voltage_sum / 1000.0f);
         lv_label_set_text(label_voltage, buf);
@@ -315,55 +318,11 @@ void every_ten_seconds(){
         snprintf(buf, sizeof(buf), "%.1f °C", qmi_data_current);
         lv_label_set_text(label_temperature, buf);
 
-        every_ten_sec_counter = 0;
-
-        float temp_for_chart = qmi_data_current;
-        for (int i = 0; i <= 18; i++) {
-          ser2->y_points[i] = ser2->y_points[i + 1];
-        }
-        ser2->y_points[19] = (temp_for_chart * 10);     //macht 29.5 wenn temp = 30.5
-      }
-        int min = 1000;
-        int max = 0;
-        for (int i = 0; i <= 19; i++) {
-          if(ser2->y_points[i] < min){
-            min = ser2->y_points[i];
-          }
-          if(ser2->y_points[i] > max){
-            max = ser2->y_points[i];
-          }
-        }
-        if((max - min) < 20){
-          max = min + 20;
-        }
-        USBSerial.println(min);
-        USBSerial.println(max);
-        double fake_chart_accurate_min = ((min / 10) - 0.3);
-        double fake_chart_accurate_max = ((max / 10) + 1.3);
-          lv_chart_set_range(fake_chart, LV_CHART_AXIS_PRIMARY_Y, fake_chart_accurate_min, fake_chart_accurate_max);
-        lv_chart_refresh(fake_chart);
-        USBSerial.println("untere grenze fake chart: " + String(fake_chart_accurate_min) + " obere grenze fake chart: " + String(fake_chart_accurate_max));
-          lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, ((min - (min%10)) - 0.3), ((max - (max%10)) + 1.3));
-        USBSerial.println("untere grenze real chart: " + String((min - 0.3)) + " obere grenze real chart: " + String((max + 0.3)));
-        USBSerial.print("eingetragene zu hohe temp: ");
-        USBSerial.println(ser2->y_points[19]);
-        USBSerial.println("");
-        USBSerial.println("");
-        lv_chart_refresh(chart);   
-        /*Problem:
-
--temp 47,1°
-fake chart 47.1 - 0.3 = 46.8°
----skala nimmt aber nur ints also wird aus 46.8 als untere grenze 46
-
--real chart kann aber 468 (also 46.8) annehmen und macht es auch
-*/    
+        lv_chart_set_next_value(chart, series, (lv_coord_t)(qmi_data_current * 10));
+        //lv_chart_refresh(chart); 
     }
+       every_ten_sec_counter = 0;
+
+}
 }
 
-static void set_temp(void *bar, int32_t temp) {
-  lv_bar_set_value((lv_obj_t *)bar, temp, LV_ANIM_OFF);
-}
-static void set_value(void *bar_volt, int value) {
-  lv_bar_set_value((lv_obj_t *)bar_volt, (int32_t)(value), LV_ANIM_OFF);
-}

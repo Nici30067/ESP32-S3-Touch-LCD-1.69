@@ -19,7 +19,7 @@ lv_obj_t *bar;
 lv_obj_t *bar_volt;
 lv_obj_t *label_voltage;
 String voltageStr;
-int every_ten_sec_counter = -2;
+unsigned int every_ten_sec_counter = 10;
 int32_t display_timer_off_time = 60000;
 
 
